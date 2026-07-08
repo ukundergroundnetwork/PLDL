@@ -20,6 +20,38 @@ function parseURL(url) {
   return null;
 }
 
+function cleanText(value) {
+  return String(value || '').trim();
+}
+
+function getTrackMeta(track, index = 0) {
+  const publisher = track.publisher_metadata || {};
+  const user = track.user || {};
+  const artist = cleanText(
+    publisher.artist ||
+    publisher.writer_composer ||
+    user.username ||
+    user.full_name ||
+    track.artist ||
+    track.username
+  );
+  const title = cleanText(
+    publisher.release_title ||
+    publisher.title ||
+    track.title ||
+    track.name
+  );
+
+  return {
+    artist: artist || 'Unknown Artist',
+    title: title || `Track ${index + 1}`,
+  };
+}
+
+function safeMp3Filename({ artist, title }) {
+  return `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -71,30 +103,31 @@ function App() {
       // --- SINGLE TRACK (no ZIP) ---
       if (total === 1 && !isPlaylist) {
         const track = tracks[0];
-        const artist = track.user?.username || track.artist || 'Unknown';
-        const title = track.title || 'track';
-        setStatus(`DOWNLOADING: ${title}`);
 
         let downloadUrl;
+        let trackInfo = track;
         if (platform === 'soundcloud') {
-          let trackInfo = track;
           if (!track.media?.transcodings) {
             const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
             trackInfo = await trackRes.json();
           }
+          const { artist, title } = getTrackMeta(trackInfo);
+          setStatus(`DOWNLOADING: ${artist} - ${title}`);
           const mp3 = trackInfo.media?.transcodings?.find(
             t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
           );
           if (!mp3) throw new Error('No MP3 stream available');
           downloadUrl = `${WORKER_BASE}/download?platform=soundcloud&url=${encodeURIComponent(mp3.url)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
         } else if (platform === 'youtube') {
+          const { artist, title } = getTrackMeta(trackInfo);
+          setStatus(`DOWNLOADING: ${artist} - ${title}`);
           downloadUrl = `${WORKER_BASE}/download?platform=youtube&trackId=${encodeURIComponent(track.id)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
         }
 
         const resp = await fetch(downloadUrl);
         if (!resp.ok) throw new Error('Download failed');
         const blob = await resp.blob();
-        saveAs(blob, `${artist} - ${title}.mp3`);
+        saveAs(blob, safeMp3Filename(getTrackMeta(trackInfo)));
         setProgress(100);
         setStatus('DOWNLOAD COMPLETE');
         setLoading(false);
@@ -105,20 +138,17 @@ function App() {
       const zip = new JSZip();
       for (let i = 0; i < total; i++) {
         const track = tracks[i];
-        const artist = track.user?.username || track.artist || 'Unknown';
-        const title = track.title || `track-${i + 1}`;
-        const safeFilename = `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
-
-        setStatus(`TRACK ${i + 1}/${total}: ${title}`);
         setProgress(((i) / total) * 90);
 
         let audioBlob;
+        let trackInfo = track;
         if (platform === 'soundcloud') {
-          let trackInfo = track;
           if (!track.media?.transcodings) {
             const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
             trackInfo = await trackRes.json();
           }
+          const { artist, title } = getTrackMeta(trackInfo, i);
+          setStatus(`TRACK ${i + 1}/${total}: ${artist} - ${title}`);
           const mp3 = trackInfo.media?.transcodings?.find(
             t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
           );
@@ -128,12 +158,14 @@ function App() {
           if (!resp.ok) throw new Error('Download failed');
           audioBlob = await resp.blob();
         } else if (platform === 'youtube') {
+          const { artist, title } = getTrackMeta(trackInfo, i);
+          setStatus(`TRACK ${i + 1}/${total}: ${artist} - ${title}`);
           const downloadUrl = `${WORKER_BASE}/download?platform=youtube&trackId=${encodeURIComponent(track.id)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
           const resp = await fetch(downloadUrl);
           if (!resp.ok) throw new Error('Download failed');
           audioBlob = await resp.blob();
         }
-        zip.file(safeFilename, audioBlob, { binary: true });
+        zip.file(safeMp3Filename(getTrackMeta(trackInfo, i)), audioBlob, { binary: true });
         setProgress(((i + 1) / total) * 90);
       }
 
