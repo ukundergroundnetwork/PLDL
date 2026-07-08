@@ -1,7 +1,7 @@
 {
   "name": "PLDL - Playlist Downloader",
   "short_name": "PLDL",
-  "description": "Private playlist downloader for SoundCloud and YouTube.",
+  "description": "Private SoundCloud playlist downloader.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
