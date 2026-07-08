@@ -14,12 +14,40 @@ export async function onRequest(context) {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // ---------- FIXED CLIENT ID (updated July 2026, still working) ----------
-  const SOUNDCLOUD_CLIENT_ID = 'a3e059563d7fd3372b49b37f00a00bcf';
+  // ---------- SELF‑HEALING CLIENT ID ----------
+  let cachedClientId = null;
+
+  async function getSoundCloudClientId() {
+    if (cachedClientId) return cachedClientId;
+
+    // Attempt 1: use the widely‑used public ID (fast)
+    const publicId = 'a3e059563d7fd3372b49b37f00a00bcf';
+    try {
+      const testRes = await fetch(`https://api-v2.soundcloud.com/tracks/1?client_id=${publicId}`);
+      if (testRes.ok) {
+        cachedClientId = publicId;
+        return publicId;
+      }
+    } catch (_) { /* fall through */ }
+
+    // Attempt 2: scrape SoundCloud homepage for current client_id
+    try {
+      const homeRes = await fetch('https://soundcloud.com');
+      const text = await homeRes.text();
+      const match = text.match(/client_id:\s*"([a-zA-Z0-9]+)"/);
+      if (match && match[1]) {
+        cachedClientId = match[1];
+        return match[1];
+      }
+    } catch (_) { /* fall through */ }
+
+    // Attempt 3: last‑resort hardcoded fallback (may break in future)
+    cachedClientId = publicId;
+    return publicId;
+  }
 
   // ---------- HELPERS ----------
 
-  // Extract YouTube video ID from various URL formats
   function extractYouTubeID(input) {
     const patterns = [
       /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
@@ -34,7 +62,6 @@ export async function onRequest(context) {
     return null;
   }
 
-  // YouTube: fetch playlist items via page scraping (fallback)
   async function getYouTubePlaylistTracks(playlistUrl) {
     const res = await fetch(playlistUrl);
     const html = await res.text();
@@ -44,15 +71,9 @@ export async function onRequest(context) {
     while ((match = regex.exec(html)) !== null) {
       if (!videoIds.includes(match[1])) videoIds.push(match[1]);
     }
-    const tracks = videoIds.map(id => ({
-      id,
-      title: 'YouTube Track',
-      artist: 'YouTube',
-    }));
-    return tracks;
+    return videoIds.map(id => ({ id, title: 'YouTube Track', artist: 'YouTube' }));
   }
 
-  // Convert YouTube video ID to MP3 using a public API (loader.to)
   async function getYouTubeMP3(videoId) {
     const apiUrl = `https://loader.to/api/card/?url=https://www.youtube.com/watch?v=${videoId}&format=mp3`;
     const resp = await fetch(apiUrl);
@@ -66,17 +87,26 @@ export async function onRequest(context) {
   // ---------- ROUTING ----------
 
   try {
-    // 1. RESOLVE (playlist/single)
+    // 1. RESOLVE
     if (pathname === '/api/resolve') {
       const scUrl = params.get('url');
       if (!scUrl) throw new Error('Missing url parameter');
       const trimmed = scUrl.trim();
 
-      // -- SoundCloud --
       if (trimmed.includes('soundcloud.com')) {
-        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${SOUNDCLOUD_CLIENT_ID}`;
+        const clientId = await getSoundCloudClientId();
+        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${clientId}`;
         const resp = await fetch(apiUrl);
-        const data = await resp.json();
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(`SoundCloud API error: ${resp.status} – ${text.slice(0, 100)}`);
+        }
+        let data;
+        try {
+          data = await resp.json();
+        } catch {
+          throw new Error('SoundCloud returned invalid JSON – client_id may be invalid');
+        }
         if (data.errors) throw new Error(data.errors?.[0]?.error_message || 'Resolve failed');
         if (data.kind === 'track') {
           return new Response(JSON.stringify({ tracks: [data] }), {
@@ -88,7 +118,6 @@ export async function onRequest(context) {
         });
       }
 
-      // -- YouTube --
       if (trimmed.includes('youtube.com') || trimmed.includes('youtu.be')) {
         const videoId = extractYouTubeID(trimmed);
         if (trimmed.includes('list=')) {
@@ -107,10 +136,11 @@ export async function onRequest(context) {
       throw new Error('Unsupported URL');
     }
 
-    // 2. GET TRACK INFO (SoundCloud only)
+    // 2. TRACK INFO (SoundCloud)
     if (pathname.startsWith('/api/tracks/')) {
       const trackId = pathname.split('/')[3];
-      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${SOUNDCLOUD_CLIENT_ID}`;
+      const clientId = await getSoundCloudClientId();
+      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${clientId}`;
       const resp = await fetch(apiUrl);
       const data = await resp.json();
       return new Response(JSON.stringify(data), {

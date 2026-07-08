@@ -7,18 +7,14 @@ import './styles.css';
 
 const WORKER_BASE = '/api';
 
-// Detect platform and if it's a single track or playlist
 function parseURL(url) {
   const trimmed = url.trim();
   if (trimmed.includes('soundcloud.com')) {
-    // SoundCloud: single track vs playlist/set
     const isPlaylist = trimmed.includes('/sets/');
     return { platform: 'soundcloud', isPlaylist };
   }
   if (trimmed.includes('youtube.com') || trimmed.includes('youtu.be')) {
-    // YouTube: playlist if URL contains 'list='
     const isPlaylist = trimmed.includes('list=');
-    // If it's a short link youtu.be/VIDEO_ID, it's always single
     return { platform: 'youtube', isPlaylist };
   }
   return null;
@@ -49,15 +45,30 @@ function App() {
       const resolveRes = await fetch(
         `${WORKER_BASE}/resolve?url=${encodeURIComponent(url.trim())}`
       );
-      if (!resolveRes.ok) throw new Error('Could not resolve link');
-      const data = await resolveRes.json();
-      const tracks = data.tracks;
-      if (!tracks || tracks.length === 0) throw new Error('No tracks found');
+      if (!resolveRes.ok) {
+        // Try to get error message from body
+        let errMsg = `Resolve failed (${resolveRes.status})`;
+        try {
+          const errData = await resolveRes.json();
+          errMsg = errData.error || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
 
+      let data;
+      try {
+        data = await resolveRes.json();
+      } catch (jsonErr) {
+        throw new Error('Invalid response from server – please try again.');
+      }
+
+      if (!data.tracks || data.tracks.length === 0) throw new Error('No tracks found');
+
+      const tracks = data.tracks;
       const total = tracks.length;
       setStatus(`FOUND ${total} TRACK(S). DOWNLOADING...`);
 
-      // If only one track and it's not a playlist, download directly (no ZIP)
+      // --- SINGLE TRACK (no ZIP) ---
       if (total === 1 && !isPlaylist) {
         const track = tracks[0];
         const artist = track.user?.username || track.artist || 'Unknown';
@@ -66,7 +77,6 @@ function App() {
 
         let downloadUrl;
         if (platform === 'soundcloud') {
-          // Get stream URL
           let trackInfo = track;
           if (!track.media?.transcodings) {
             const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
@@ -91,7 +101,7 @@ function App() {
         return;
       }
 
-      // Multiple tracks (or playlist) → ZIP
+      // --- MULTIPLE TRACKS → ZIP ---
       const zip = new JSZip();
       for (let i = 0; i < total; i++) {
         const track = tracks[i];
@@ -130,7 +140,7 @@ function App() {
       setStatus('CREATING ZIP...');
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       setProgress(100);
-      saveAs(zipBlob, `playlist.zip`);
+      saveAs(zipBlob, 'playlist.zip');
       setStatus('DOWNLOAD COMPLETE');
     } catch (err) {
       setError(err.message);
