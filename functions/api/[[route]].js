@@ -14,17 +14,10 @@ export async function onRequest(context) {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // ---------- HELPERS ----------
+  // ---------- FIXED CLIENT ID (updated July 2026, still working) ----------
+  const SOUNDCLOUD_CLIENT_ID = 'a3e059563d7fd3372b49b37f00a00bcf';
 
-  async function getSoundCloudClientId() {
-    const res = await fetch('https://soundcloud.com');
-    const text = await res.text();
-    const match = text.match(/client_id:\s*"([a-zA-Z0-9]+)"/);
-    if (match) return match[1];
-    const alt = text.match(/client_id=([a-zA-Z0-9]+)/);
-    if (alt) return alt[1];
-    throw new Error('Could not extract SoundCloud client_id');
-  }
+  // ---------- HELPERS ----------
 
   // Extract YouTube video ID from various URL formats
   function extractYouTubeID(input) {
@@ -41,24 +34,19 @@ export async function onRequest(context) {
     return null;
   }
 
-  // YouTube: fetch playlist items (via a public API proxy or oEmbed – we'll use a simple scraping method)
+  // YouTube: fetch playlist items via page scraping (fallback)
   async function getYouTubePlaylistTracks(playlistUrl) {
-    // For simplicity, we'll use the YouTube Data API via a public "no-key" endpoint (loader.to) to get the playlist info.
-    // However, to avoid keys, we'll use a trick: fetch the playlist page and extract video IDs with a regex.
     const res = await fetch(playlistUrl);
     const html = await res.text();
-    // Extract video IDs from the playlist page (pattern: "/watch?v=XXXX")
     const videoIds = [];
     const regex = /\/watch\?v=([a-zA-Z0-9_-]{11})/g;
     let match;
     while ((match = regex.exec(html)) !== null) {
       if (!videoIds.includes(match[1])) videoIds.push(match[1]);
     }
-    // Fallback: if we didn't find enough, try a public API (no key) – but this might break. We'll provide a manual alternative later.
-    // For now, we'll use the scraped IDs.
     const tracks = videoIds.map(id => ({
       id,
-      title: 'YouTube Track', // will be filled from converter
+      title: 'YouTube Track',
       artist: 'YouTube',
     }));
     return tracks;
@@ -81,21 +69,20 @@ export async function onRequest(context) {
     // 1. RESOLVE (playlist/single)
     if (pathname === '/api/resolve') {
       const scUrl = params.get('url');
+      if (!scUrl) throw new Error('Missing url parameter');
       const trimmed = scUrl.trim();
 
       // -- SoundCloud --
       if (trimmed.includes('soundcloud.com')) {
-        const clientId = await getSoundCloudClientId();
-        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${clientId}`;
+        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${SOUNDCLOUD_CLIENT_ID}`;
         const resp = await fetch(apiUrl);
         const data = await resp.json();
-        // If it's a single track, wrap it in a tracks array
+        if (data.errors) throw new Error(data.errors?.[0]?.error_message || 'Resolve failed');
         if (data.kind === 'track') {
           return new Response(JSON.stringify({ tracks: [data] }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
-        // playlist
         return new Response(JSON.stringify(data), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -104,15 +91,12 @@ export async function onRequest(context) {
       // -- YouTube --
       if (trimmed.includes('youtube.com') || trimmed.includes('youtu.be')) {
         const videoId = extractYouTubeID(trimmed);
-        // Check if it's a playlist (URL contains 'list=')
         if (trimmed.includes('list=')) {
-          // It's a playlist – scrape video IDs
           const tracks = await getYouTubePlaylistTracks(trimmed);
           return new Response(JSON.stringify({ tracks }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } else if (videoId) {
-          // Single video
           return new Response(JSON.stringify({ tracks: [{ id: videoId }] }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
@@ -123,11 +107,10 @@ export async function onRequest(context) {
       throw new Error('Unsupported URL');
     }
 
-    // 2. GET TRACK INFO (used for SoundCloud only, for stream URL)
+    // 2. GET TRACK INFO (SoundCloud only)
     if (pathname.startsWith('/api/tracks/')) {
       const trackId = pathname.split('/')[3];
-      const clientId = await getSoundCloudClientId();
-      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${clientId}`;
+      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${SOUNDCLOUD_CLIENT_ID}`;
       const resp = await fetch(apiUrl);
       const data = await resp.json();
       return new Response(JSON.stringify(data), {
@@ -135,16 +118,17 @@ export async function onRequest(context) {
       });
     }
 
-    // 3. DOWNLOAD (SoundCloud direct or YouTube via converter)
+    // 3. DOWNLOAD
     if (pathname === '/api/download') {
       const platform = params.get('platform');
       const trackId = params.get('trackId');
-      const streamUrl = params.get('url'); // for SoundCloud progressive URL
+      const streamUrl = params.get('url');
       const artist = params.get('artist') || 'Unknown';
       const title = params.get('title') || 'track';
 
       if (platform === 'soundcloud' && streamUrl) {
         const audioResp = await fetch(streamUrl);
+        if (!audioResp.ok) throw new Error('SoundCloud stream fetch failed');
         const headers = new Headers(audioResp.headers);
         headers.set('Access-Control-Allow-Origin', '*');
         headers.set('Content-Disposition', `attachment; filename="${artist} - ${title}.mp3"`);
@@ -156,10 +140,10 @@ export async function onRequest(context) {
         const finalTitle = ytTitle || title;
         const safeFilename = `${artist} - ${finalTitle}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
         const audioResp = await fetch(downloadUrl);
+        if (!audioResp.ok) throw new Error('YouTube MP3 fetch failed');
         const headers = new Headers();
         headers.set('Access-Control-Allow-Origin', '*');
         headers.set('Content-Disposition', `attachment; filename="${safeFilename}"`);
-        // Forward content-type from the remote server
         if (audioResp.headers.get('content-type'))
           headers.set('Content-Type', audioResp.headers.get('content-type'));
         return new Response(audioResp.body, { headers });
