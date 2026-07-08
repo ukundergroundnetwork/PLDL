@@ -14,39 +14,52 @@ export async function onRequest(context) {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // ---------- SELF‑HEALING CLIENT ID ----------
+  // ---------- CLIENT ID RESOLUTION ----------
   let cachedClientId = null;
 
   async function getSoundCloudClientId() {
     if (cachedClientId) return cachedClientId;
 
-    // Attempt 1: use the widely‑used public ID (fast)
-    const publicId = 'a3e059563d7fd3372b49b37f00a00bcf';
-    try {
-      const testRes = await fetch(`https://api-v2.soundcloud.com/tracks/1?client_id=${publicId}`);
-      if (testRes.ok) {
-        cachedClientId = publicId;
-        return publicId;
-      }
-    } catch (_) { /* fall through */ }
+    // List of known public IDs (still active as of mid‑2026)
+    const knownIds = [
+      'a3e059563d7fd3372b49b37f00a00bcf',
+      'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX',
+      '2t9loNQH90kzJcsFCODdigxfp325aq4z',
+    ];
 
-    // Attempt 2: scrape SoundCloud homepage for current client_id
+    for (const id of knownIds) {
+      try {
+        const test = await fetch(`https://api-v2.soundcloud.com/tracks/1?client_id=${id}`);
+        if (test.ok) {
+          cachedClientId = id;
+          return id;
+        }
+      } catch (_) { /* skip */ }
+    }
+
+    // Fallback: scrape SoundCloud homepage
     try {
-      const homeRes = await fetch('https://soundcloud.com');
+      const homeRes = await fetch('https://soundcloud.com', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+      });
       const text = await homeRes.text();
-      const match = text.match(/client_id:\s*"([a-zA-Z0-9]+)"/);
+      // Look for the standard client_id pattern in script tags
+      const match = text.match(/(?:client_id=|client_id:)\s*["']?([a-zA-Z0-9]{32})["']?/);
       if (match && match[1]) {
         cachedClientId = match[1];
         return match[1];
       }
     } catch (_) { /* fall through */ }
 
-    // Attempt 3: last‑resort hardcoded fallback (may break in future)
-    cachedClientId = publicId;
-    return publicId;
+    throw new Error('No valid SoundCloud client ID found. Please try again later.');
   }
 
-  // ---------- HELPERS ----------
+  // ---------- URL HELPERS ----------
+  async function expandSoundCloudShortUrl(shortUrl) {
+    // Follow redirects to get the full URL
+    const resp = await fetch(shortUrl, { redirect: 'follow', method: 'HEAD' });
+    return resp.url; // final URL after redirects
+  }
 
   function extractYouTubeID(input) {
     const patterns = [
@@ -84,28 +97,37 @@ export async function onRequest(context) {
     throw new Error('Could not convert YouTube video');
   }
 
-  // ---------- ROUTING ----------
-
+  // ---------- ROUTES ----------
   try {
     // 1. RESOLVE
     if (pathname === '/api/resolve') {
       const scUrl = params.get('url');
       if (!scUrl) throw new Error('Missing url parameter');
-      const trimmed = scUrl.trim();
+      let trimmed = scUrl.trim();
 
+      // Expand shortened SoundCloud links
+      if (trimmed.includes('on.soundcloud.com')) {
+        try {
+          trimmed = await expandSoundCloudShortUrl(trimmed);
+        } catch {
+          throw new Error('Could not expand short SoundCloud link. Try using the full URL.');
+        }
+      }
+
+      // SoundCloud
       if (trimmed.includes('soundcloud.com')) {
         const clientId = await getSoundCloudClientId();
         const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${clientId}`;
         const resp = await fetch(apiUrl);
         if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(`SoundCloud API error: ${resp.status} – ${text.slice(0, 100)}`);
+          const text = await resp.text().catch(() => '');
+          throw new Error(`SoundCloud API error ${resp.status}: ${text.slice(0, 200)}`);
         }
         let data;
         try {
           data = await resp.json();
         } catch {
-          throw new Error('SoundCloud returned invalid JSON – client_id may be invalid');
+          throw new Error('SoundCloud returned invalid JSON (client ID may be invalid)');
         }
         if (data.errors) throw new Error(data.errors?.[0]?.error_message || 'Resolve failed');
         if (data.kind === 'track') {
@@ -118,6 +140,7 @@ export async function onRequest(context) {
         });
       }
 
+      // YouTube
       if (trimmed.includes('youtube.com') || trimmed.includes('youtu.be')) {
         const videoId = extractYouTubeID(trimmed);
         if (trimmed.includes('list=')) {
