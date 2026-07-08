@@ -65,6 +65,20 @@ export async function onRequest(context) {
     throw new Error('Could not convert YouTube video');
   }
 
+  async function getSoundCloudStream(streamUrl) {
+    const separator = streamUrl.includes('?') ? '&' : '?';
+    const transcodeResp = await fetch(`${streamUrl}${separator}client_id=${SOUNDCLOUD_CLIENT_ID}`);
+    if (!transcodeResp.ok) throw new Error('SoundCloud stream URL resolve failed');
+
+    const streamData = await transcodeResp.json();
+    if (!streamData.url) throw new Error('SoundCloud stream URL missing');
+
+    const audioResp = await fetch(streamData.url);
+    if (!audioResp.ok) throw new Error('SoundCloud stream fetch failed');
+
+    return audioResp;
+  }
+
   // ---------- ROUTES ----------
 
   try {
@@ -154,8 +168,7 @@ export async function onRequest(context) {
       const title = params.get('title') || 'track';
 
       if (platform === 'soundcloud' && streamUrl) {
-        const audioResp = await fetch(streamUrl);
-        if (!audioResp.ok) throw new Error('SoundCloud stream fetch failed');
+        const audioResp = await getSoundCloudStream(streamUrl);
         const headers = new Headers(audioResp.headers);
         headers.set('Access-Control-Allow-Origin', '*');
         headers.set('Content-Disposition', `attachment; filename="${artist} - ${title}.mp3"`);
