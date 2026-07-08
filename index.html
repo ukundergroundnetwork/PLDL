@@ -1,16 +1,26 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <title>SC Playlist Downloader</title>
-  <link rel="manifest" href="/manifest.json" />
-  <style>
-    html, body, #root { margin:0; padding:0; height:100%; overflow:hidden; font-family:system-ui, sans-serif; background:#1a1a1a; color:#fff; }
-  </style>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>SC Playlist Downloader</title>
+    <link rel="manifest" href="/manifest.json" />
+    <!-- Oswald font – same as your UKUGN site -->
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden; /* locked, no scroll */
+        background: #000;
+        color: #fff;
+        font-family: 'Oswald', system-ui, -apple-system, sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>
