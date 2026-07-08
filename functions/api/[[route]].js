@@ -89,21 +89,12 @@ export async function onRequest(context) {
       'User-Agent': 'Mozilla/5.0',
     };
 
-    const startResp = await fetch(apiUrl, { headers: requestHeaders });
-    if (!startResp.ok) throw new Error('Could not start YouTube conversion');
-
-    const startData = await startResp.json();
-    if (!startData.success || !startData.progress_url) {
-      throw new Error(startData.text || 'Could not convert YouTube video');
-    }
+    const startData = await startYouTubeConversion(apiUrl, requestHeaders);
 
     for (let i = 0; i < 20; i++) {
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      const progressResp = await fetch(startData.progress_url, { headers: requestHeaders });
-      if (!progressResp.ok) continue;
-
-      const progressData = await progressResp.json();
+      const progressData = await getYouTubeConversionProgress(startData.progress_url, requestHeaders);
       if (progressData.download_url) {
         const title = progressData.title || startData.title || 'YouTube Track';
         return {
@@ -114,6 +105,24 @@ export async function onRequest(context) {
     }
 
     throw new Error('YouTube conversion timed out');
+  }
+
+  async function startYouTubeConversion(apiUrl, requestHeaders) {
+    const startResp = await fetch(apiUrl, { headers: requestHeaders });
+    if (!startResp.ok) throw new Error('Could not start YouTube conversion');
+
+    const startData = await startResp.json();
+    if (!startData.success || !startData.progress_url) {
+      throw new Error(startData.text || 'Could not convert YouTube video');
+    }
+
+    return startData;
+  }
+
+  async function getYouTubeConversionProgress(progressUrl, requestHeaders) {
+    const progressResp = await fetch(progressUrl, { headers: requestHeaders });
+    if (!progressResp.ok) throw new Error('Could not check YouTube conversion progress');
+    return progressResp.json();
   }
 
   async function getSoundCloudStream(streamUrl) {
@@ -211,10 +220,46 @@ export async function onRequest(context) {
     }
 
     // 3. DOWNLOAD
+    if (pathname === '/api/youtube/start') {
+      const trackId = params.get('trackId');
+      if (!trackId) throw new Error('Missing YouTube track ID');
+
+      const videoUrl = `https://www.youtube.com/watch?v=${trackId}`;
+      const apiUrl = `https://loader.to/ajax/download.php?format=mp3&url=${encodeURIComponent(videoUrl)}`;
+      const data = await startYouTubeConversion(apiUrl, {
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+      });
+
+      return new Response(JSON.stringify({
+        progressUrl: data.progress_url,
+        title: data.title || 'YouTube Track',
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (pathname === '/api/youtube/progress') {
+      const progressUrl = params.get('progressUrl');
+      const artist = params.get('artist') || '';
+      if (!progressUrl) throw new Error('Missing YouTube progress URL');
+
+      const data = await getYouTubeConversionProgress(progressUrl, {
+        Accept: 'application/json',
+        'User-Agent': 'Mozilla/5.0',
+      });
+      const title = data.title ? stripArtistPrefix(data.title, artist) : data.title;
+
+      return new Response(JSON.stringify({ ...data, title }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     if (pathname === '/api/download') {
       const platform = params.get('platform');
       const trackId = params.get('trackId');
       const streamUrl = params.get('url');
+      const directDownloadUrl = params.get('downloadUrl');
       const artist = params.get('artist') || 'Unknown';
       const title = params.get('title') || 'track';
 
@@ -231,6 +276,18 @@ export async function onRequest(context) {
         const finalTitle = ytTitle || title;
         const safeFilename = `${artist} - ${finalTitle}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
         const audioResp = await fetch(downloadUrl);
+        if (!audioResp.ok) throw new Error('YouTube MP3 fetch failed');
+        const headers = new Headers();
+        headers.set('Access-Control-Allow-Origin', '*');
+        headers.set('Content-Disposition', `attachment; filename="${safeFilename}"`);
+        if (audioResp.headers.get('content-type'))
+          headers.set('Content-Type', audioResp.headers.get('content-type'));
+        return new Response(audioResp.body, { headers });
+      }
+
+      if (platform === 'youtube' && directDownloadUrl) {
+        const safeFilename = `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
+        const audioResp = await fetch(directDownloadUrl);
         if (!audioResp.ok) throw new Error('YouTube MP3 fetch failed');
         const headers = new Headers();
         headers.set('Access-Control-Allow-Origin', '*');

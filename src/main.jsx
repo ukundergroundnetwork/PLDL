@@ -60,6 +60,15 @@ function safeMp3Filename({ artist, title }) {
   return `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
 }
 
+function normalizeConverterProgress(value) {
+  const progress = Number(value) || 0;
+  return Math.max(0, Math.min(100, progress > 100 ? progress / 10 : progress));
+}
+
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
@@ -145,31 +154,52 @@ function App() {
       // --- MULTIPLE TRACKS → ZIP ---
       const zip = new JSZip();
       if (platform === 'youtube') {
-        let nextIndex = 0;
-        let completed = 0;
-        const workerCount = Math.min(3, total);
+        for (let i = 0; i < total; i++) {
+          const track = tracks[i];
+          let { artist, title } = getTrackMeta(track, i);
 
-        async function downloadYouTubeTrack() {
-          while (nextIndex < total) {
-            const index = nextIndex++;
-            const track = tracks[index];
-            const { artist, title } = getTrackMeta(track, index);
+          setStatus(`TRACK ${i + 1}/${total}: STARTING ${artist} - ${title}`);
+          const startRes = await fetch(`${WORKER_BASE}/youtube/start?trackId=${encodeURIComponent(track.id)}`);
+          if (!startRes.ok) throw new Error(`Could not start "${title}"`);
 
-            setStatus(`TRACK ${index + 1}/${total}: CONVERTING ${artist} - ${title}`);
-            const downloadUrl = `${WORKER_BASE}/download?platform=youtube&trackId=${encodeURIComponent(track.id)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
-            const resp = await fetch(downloadUrl);
-            if (!resp.ok) throw new Error(`Download failed for "${title}"`);
+          const startData = await startRes.json();
+          let downloadUrl = '';
 
-            const audioBlob = await resp.blob();
-            zip.file(safeMp3Filename({ artist, title }), audioBlob, { binary: true });
+          for (let attempt = 0; attempt < 45; attempt++) {
+            await wait(2000);
 
-            completed += 1;
-            setProgress((completed / total) * 90);
-            setStatus(`DOWNLOADED ${completed}/${total}`);
+            const progressRes = await fetch(
+              `${WORKER_BASE}/youtube/progress?progressUrl=${encodeURIComponent(startData.progressUrl)}&artist=${encodeURIComponent(artist)}`
+            );
+            if (!progressRes.ok) throw new Error(`Could not check "${title}"`);
+
+            const progressData = await progressRes.json();
+            const trackProgress = normalizeConverterProgress(progressData.progress);
+            const totalProgress = ((i + trackProgress / 100) / total) * 90;
+            setProgress(totalProgress);
+            setStatus(`TRACK ${i + 1}/${total}: ${trackProgress}% ${artist} - ${title}`);
+
+            if (progressData.title) title = progressData.title;
+            if (progressData.download_url) {
+              downloadUrl = progressData.download_url;
+              break;
+            }
           }
+
+          if (!downloadUrl) throw new Error(`Timed out converting "${title}"`);
+
+          setStatus(`TRACK ${i + 1}/${total}: DOWNLOADING ${artist} - ${title}`);
+          const resp = await fetch(
+            `${WORKER_BASE}/download?platform=youtube&downloadUrl=${encodeURIComponent(downloadUrl)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`
+          );
+          if (!resp.ok) throw new Error(`Download failed for "${title}"`);
+
+          const audioBlob = await resp.blob();
+          zip.file(safeMp3Filename({ artist, title }), audioBlob, { binary: true });
+          setProgress(((i + 1) / total) * 90);
+          setStatus(`DOWNLOADED ${i + 1}/${total}`);
         }
 
-        await Promise.all(Array.from({ length: workerCount }, () => downloadYouTubeTrack()));
         setStatus('CREATING ZIP...');
         const zipBlob = await zip.generateAsync({ type: 'blob' });
         setProgress(100);
