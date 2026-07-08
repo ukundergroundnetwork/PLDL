@@ -5,7 +5,9 @@ export default defineConfig({
   plugins: [react()],
   build: {
     rollupOptions: {
-      input: 'template.html'   // use renamed template
+      input: {
+        index: 'template.html'
+      }
     }
   }
 });
