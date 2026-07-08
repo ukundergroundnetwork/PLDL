@@ -1,5 +1,5 @@
 {
-  "name": "sc-playlist-dl-worker",
+  "name": "dl",
   "compatibility_date": "2026-07-08",
   "assets": {
     "directory": "dist",
