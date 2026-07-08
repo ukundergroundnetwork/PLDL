@@ -41,6 +41,13 @@ export async function onRequest(context) {
     return null;
   }
 
+  function stripArtistPrefix(title, artist) {
+    if (!title || !artist) return title;
+
+    const escapedArtist = artist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return title.replace(new RegExp(`^${escapedArtist}\\s*[-–—:|]+\\s*`, 'i'), '').trim() || title;
+  }
+
   async function getYouTubeVideoMeta(videoId) {
     const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`;
@@ -49,10 +56,11 @@ export async function onRequest(context) {
       const resp = await fetch(oembedUrl);
       if (!resp.ok) throw new Error('YouTube metadata fetch failed');
       const data = await resp.json();
+      const artist = data.author_name || 'YouTube';
       return {
         id: videoId,
-        title: data.title || 'YouTube Track',
-        artist: data.author_name || 'YouTube',
+        title: stripArtistPrefix(data.title || 'YouTube Track', artist),
+        artist,
       };
     } catch {
       return { id: videoId, title: 'YouTube Track', artist: 'YouTube' };
@@ -73,7 +81,7 @@ export async function onRequest(context) {
   }
 
   // Convert YouTube video ID to MP3 using loader.to
-  async function getYouTubeMP3(videoId) {
+  async function getYouTubeMP3(videoId, artist = '') {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const apiUrl = `https://loader.to/ajax/download.php?format=mp3&url=${encodeURIComponent(videoUrl)}`;
     const requestHeaders = {
@@ -97,9 +105,10 @@ export async function onRequest(context) {
 
       const progressData = await progressResp.json();
       if (progressData.download_url) {
+        const title = progressData.title || startData.title || 'YouTube Track';
         return {
           downloadUrl: progressData.download_url,
-          title: progressData.title || startData.title || 'YouTube Track',
+          title: stripArtistPrefix(title, artist),
         };
       }
     }
@@ -218,7 +227,7 @@ export async function onRequest(context) {
       }
 
       if (platform === 'youtube' && trackId) {
-        const { downloadUrl, title: ytTitle } = await getYouTubeMP3(trackId);
+        const { downloadUrl, title: ytTitle } = await getYouTubeMP3(trackId, artist);
         const finalTitle = ytTitle || title;
         const safeFilename = `${artist} - ${finalTitle}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
         const audioResp = await fetch(downloadUrl);

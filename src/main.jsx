@@ -24,6 +24,13 @@ function cleanText(value) {
   return String(value || '').trim();
 }
 
+function removeArtistPrefix(title, artist) {
+  if (!title || !artist) return title;
+
+  const escapedArtist = artist.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return title.replace(new RegExp(`^${escapedArtist}\\s*[-–—:|]+\\s*`, 'i'), '').trim() || title;
+}
+
 function getTrackMeta(track, index = 0) {
   const publisher = track.publisher_metadata || {};
   const user = track.user || {};
@@ -35,12 +42,13 @@ function getTrackMeta(track, index = 0) {
     track.artist ||
     track.username
   );
-  const title = cleanText(
+  const rawTitle = cleanText(
     publisher.release_title ||
     publisher.title ||
     track.title ||
     track.name
   );
+  const title = removeArtistPrefix(rawTitle, artist);
 
   return {
     artist: artist || 'Unknown Artist',
@@ -136,6 +144,40 @@ function App() {
 
       // --- MULTIPLE TRACKS → ZIP ---
       const zip = new JSZip();
+      if (platform === 'youtube') {
+        let nextIndex = 0;
+        let completed = 0;
+        const workerCount = Math.min(3, total);
+
+        async function downloadYouTubeTrack() {
+          while (nextIndex < total) {
+            const index = nextIndex++;
+            const track = tracks[index];
+            const { artist, title } = getTrackMeta(track, index);
+
+            setStatus(`TRACK ${index + 1}/${total}: CONVERTING ${artist} - ${title}`);
+            const downloadUrl = `${WORKER_BASE}/download?platform=youtube&trackId=${encodeURIComponent(track.id)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
+            const resp = await fetch(downloadUrl);
+            if (!resp.ok) throw new Error(`Download failed for "${title}"`);
+
+            const audioBlob = await resp.blob();
+            zip.file(safeMp3Filename({ artist, title }), audioBlob, { binary: true });
+
+            completed += 1;
+            setProgress((completed / total) * 90);
+            setStatus(`DOWNLOADED ${completed}/${total}`);
+          }
+        }
+
+        await Promise.all(Array.from({ length: workerCount }, () => downloadYouTubeTrack()));
+        setStatus('CREATING ZIP...');
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        setProgress(100);
+        saveAs(zipBlob, 'playlist.zip');
+        setStatus('DOWNLOAD COMPLETE');
+        return;
+      }
+
       for (let i = 0; i < total; i++) {
         const track = tracks[i];
         setProgress(((i) / total) * 90);
