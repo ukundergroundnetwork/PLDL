@@ -41,6 +41,24 @@ export async function onRequest(context) {
     return null;
   }
 
+  async function getYouTubeVideoMeta(videoId) {
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(watchUrl)}&format=json`;
+
+    try {
+      const resp = await fetch(oembedUrl);
+      if (!resp.ok) throw new Error('YouTube metadata fetch failed');
+      const data = await resp.json();
+      return {
+        id: videoId,
+        title: data.title || 'YouTube Track',
+        artist: data.author_name || 'YouTube',
+      };
+    } catch {
+      return { id: videoId, title: 'YouTube Track', artist: 'YouTube' };
+    }
+  }
+
   // YouTube: fetch playlist items via page scraping
   async function getYouTubePlaylistTracks(playlistUrl) {
     const res = await fetch(playlistUrl);
@@ -51,18 +69,42 @@ export async function onRequest(context) {
     while ((match = regex.exec(html)) !== null) {
       if (!videoIds.includes(match[1])) videoIds.push(match[1]);
     }
-    return videoIds.map(id => ({ id, title: 'YouTube Track', artist: 'YouTube' }));
+    return Promise.all(videoIds.map(id => getYouTubeVideoMeta(id)));
   }
 
   // Convert YouTube video ID to MP3 using loader.to
   async function getYouTubeMP3(videoId) {
-    const apiUrl = `https://loader.to/api/card/?url=https://www.youtube.com/watch?v=${videoId}&format=mp3`;
-    const resp = await fetch(apiUrl);
-    const data = await resp.json();
-    if (data.success && data.link) {
-      return { downloadUrl: data.link, title: data.title || 'Unknown' };
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const apiUrl = `https://loader.to/ajax/download.php?format=mp3&url=${encodeURIComponent(videoUrl)}`;
+    const requestHeaders = {
+      Accept: 'application/json',
+      'User-Agent': 'Mozilla/5.0',
+    };
+
+    const startResp = await fetch(apiUrl, { headers: requestHeaders });
+    if (!startResp.ok) throw new Error('Could not start YouTube conversion');
+
+    const startData = await startResp.json();
+    if (!startData.success || !startData.progress_url) {
+      throw new Error(startData.text || 'Could not convert YouTube video');
     }
-    throw new Error('Could not convert YouTube video');
+
+    for (let i = 0; i < 20; i++) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      const progressResp = await fetch(startData.progress_url, { headers: requestHeaders });
+      if (!progressResp.ok) continue;
+
+      const progressData = await progressResp.json();
+      if (progressData.download_url) {
+        return {
+          downloadUrl: progressData.download_url,
+          title: progressData.title || startData.title || 'YouTube Track',
+        };
+      }
+    }
+
+    throw new Error('YouTube conversion timed out');
   }
 
   async function getSoundCloudStream(streamUrl) {
@@ -138,7 +180,7 @@ export async function onRequest(context) {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } else if (videoId) {
-          return new Response(JSON.stringify({ tracks: [{ id: videoId }] }), {
+          return new Response(JSON.stringify({ tracks: [await getYouTubeVideoMeta(videoId)] }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
