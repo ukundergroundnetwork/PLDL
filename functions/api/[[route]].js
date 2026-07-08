@@ -14,53 +14,19 @@ export async function onRequest(context) {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // ---------- CLIENT ID RESOLUTION ----------
-  let cachedClientId = null;
+  // ---------- HARDCODED WORKING CLIENT ID ----------
+  // (extracted from SoundCloud's live page – replace if it expires)
+  const SOUNDCLOUD_CLIENT_ID = '6bs1QjDBWrmh7FpcKrIDvzodJ2ZZpRwe';
 
-  async function getSoundCloudClientId() {
-    if (cachedClientId) return cachedClientId;
+  // ---------- HELPERS ----------
 
-    // List of known public IDs (still active as of mid‑2026)
-    const knownIds = [
-      'a3e059563d7fd3372b49b37f00a00bcf',
-      'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX',
-      '2t9loNQH90kzJcsFCODdigxfp325aq4z',
-    ];
-
-    for (const id of knownIds) {
-      try {
-        const test = await fetch(`https://api-v2.soundcloud.com/tracks/1?client_id=${id}`);
-        if (test.ok) {
-          cachedClientId = id;
-          return id;
-        }
-      } catch (_) { /* skip */ }
-    }
-
-    // Fallback: scrape SoundCloud homepage
-    try {
-      const homeRes = await fetch('https://soundcloud.com', {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-      });
-      const text = await homeRes.text();
-      // Look for the standard client_id pattern in script tags
-      const match = text.match(/(?:client_id=|client_id:)\s*["']?([a-zA-Z0-9]{32})["']?/);
-      if (match && match[1]) {
-        cachedClientId = match[1];
-        return match[1];
-      }
-    } catch (_) { /* fall through */ }
-
-    throw new Error('No valid SoundCloud client ID found. Please try again later.');
-  }
-
-  // ---------- URL HELPERS ----------
-  async function expandSoundCloudShortUrl(shortUrl) {
-    // Follow redirects to get the full URL
+  // Expand shortened SoundCloud links
+  async function expandShortUrl(shortUrl) {
     const resp = await fetch(shortUrl, { redirect: 'follow', method: 'HEAD' });
     return resp.url; // final URL after redirects
   }
 
+  // Extract YouTube video ID from various URL formats
   function extractYouTubeID(input) {
     const patterns = [
       /(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
@@ -75,6 +41,7 @@ export async function onRequest(context) {
     return null;
   }
 
+  // YouTube: fetch playlist items via page scraping
   async function getYouTubePlaylistTracks(playlistUrl) {
     const res = await fetch(playlistUrl);
     const html = await res.text();
@@ -87,6 +54,7 @@ export async function onRequest(context) {
     return videoIds.map(id => ({ id, title: 'YouTube Track', artist: 'YouTube' }));
   }
 
+  // Convert YouTube video ID to MP3 using loader.to
   async function getYouTubeMP3(videoId) {
     const apiUrl = `https://loader.to/api/card/?url=https://www.youtube.com/watch?v=${videoId}&format=mp3`;
     const resp = await fetch(apiUrl);
@@ -98,7 +66,15 @@ export async function onRequest(context) {
   }
 
   // ---------- ROUTES ----------
+
   try {
+    // 🩺 TEMPORARY PING ROUTE – test that Worker is alive
+    if (pathname === '/api/ping') {
+      return new Response(JSON.stringify({ alive: true, clientId: SOUNDCLOUD_CLIENT_ID }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // 1. RESOLVE
     if (pathname === '/api/resolve') {
       const scUrl = params.get('url');
@@ -108,7 +84,7 @@ export async function onRequest(context) {
       // Expand shortened SoundCloud links
       if (trimmed.includes('on.soundcloud.com')) {
         try {
-          trimmed = await expandSoundCloudShortUrl(trimmed);
+          trimmed = await expandShortUrl(trimmed);
         } catch {
           throw new Error('Could not expand short SoundCloud link. Try using the full URL.');
         }
@@ -116,8 +92,7 @@ export async function onRequest(context) {
 
       // SoundCloud
       if (trimmed.includes('soundcloud.com')) {
-        const clientId = await getSoundCloudClientId();
-        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${clientId}`;
+        const apiUrl = `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(trimmed)}&client_id=${SOUNDCLOUD_CLIENT_ID}`;
         const resp = await fetch(apiUrl);
         if (!resp.ok) {
           const text = await resp.text().catch(() => '');
@@ -162,8 +137,7 @@ export async function onRequest(context) {
     // 2. TRACK INFO (SoundCloud)
     if (pathname.startsWith('/api/tracks/')) {
       const trackId = pathname.split('/')[3];
-      const clientId = await getSoundCloudClientId();
-      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${clientId}`;
+      const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${SOUNDCLOUD_CLIENT_ID}`;
       const resp = await fetch(apiUrl);
       const data = await resp.json();
       return new Response(JSON.stringify(data), {
