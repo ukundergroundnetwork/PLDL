@@ -84,8 +84,8 @@ function App() {
   return (
     <div className="app-container">
       <div className="card">
-        <h1 className="title">🎵 PLAYLIST DL</h1>
-        <p className="subtitle">SOUNDCLOUD · SPOTIFY · YOUTUBE</p>
+        <h1 className="title">🎵 PLAYLIST DL 🎵</h1>
+        <p className="subtitle">SOUNDCLOUD OR YOUTUBE</p>
 
         <input
           type="text"
