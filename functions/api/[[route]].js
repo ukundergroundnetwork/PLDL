@@ -24,7 +24,9 @@ export async function onRequest(context) {
   async function getSoundCloudStream(streamUrl) {
     const separator = streamUrl.includes('?') ? '&' : '?';
     const transcodeResp = await fetch(`${streamUrl}${separator}client_id=${SOUNDCLOUD_CLIENT_ID}`);
-    if (!transcodeResp.ok) throw new Error('SoundCloud stream URL resolve failed');
+    if (!transcodeResp.ok) {
+      throw new Error(`SoundCloud stream URL resolve failed (${transcodeResp.status})`);
+    }
 
     const streamData = await transcodeResp.json();
     if (!streamData.url) throw new Error('SoundCloud stream URL missing');
@@ -89,6 +91,10 @@ export async function onRequest(context) {
       const trackId = pathname.split('/')[3];
       const apiUrl = `https://api-v2.soundcloud.com/tracks/${trackId}?client_id=${SOUNDCLOUD_CLIENT_ID}`;
       const resp = await fetch(apiUrl);
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(`SoundCloud track lookup failed ${resp.status}: ${text.slice(0, 200)}`);
+      }
       const data = await resp.json();
       return new Response(JSON.stringify(data), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

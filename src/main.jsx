@@ -134,35 +134,56 @@ function App() {
 
       // --- MULTIPLE TRACKS → ZIP ---
       const zip = new JSZip();
+      let addedTracks = 0;
+      const skippedTracks = [];
+
       for (let i = 0; i < total; i++) {
         const track = tracks[i];
         setProgress(((i) / total) * 90);
 
-        let audioBlob;
-        let trackInfo = track;
-        if (!track.media?.transcodings) {
-          const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
-          trackInfo = await trackRes.json();
+        try {
+          let audioBlob;
+          let trackInfo = track;
+          if (!track.media?.transcodings) {
+            const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
+            if (!trackRes.ok) throw new Error('Track details unavailable');
+            trackInfo = await trackRes.json();
+          }
+
+          const { artist, title } = getTrackMeta(trackInfo, i);
+          setStatus(`TRACK ${i + 1}/${total}: ${artist} - ${title}`);
+          const mp3 = trackInfo.media?.transcodings?.find(
+            t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
+          );
+          if (!mp3) throw new Error('No MP3 stream available');
+
+          const downloadUrl = `${WORKER_BASE}/download?url=${encodeURIComponent(mp3.url)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
+          const resp = await fetch(downloadUrl);
+          if (!resp.ok) throw new Error('Download failed');
+
+          audioBlob = await resp.blob();
+          zip.file(safeMp3Filename({ artist, title }), audioBlob, { binary: true });
+          addedTracks += 1;
+        } catch {
+          const { artist, title } = getTrackMeta(track, i);
+          skippedTracks.push(`${artist} - ${title}`);
+          setStatus(`SKIPPED ${skippedTracks.length}: ${artist} - ${title}`);
         }
-        const { artist, title } = getTrackMeta(trackInfo, i);
-        setStatus(`TRACK ${i + 1}/${total}: ${artist} - ${title}`);
-        const mp3 = trackInfo.media?.transcodings?.find(
-          t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
-        );
-        if (!mp3) throw new Error(`No MP3 for "${title}"`);
-        const downloadUrl = `${WORKER_BASE}/download?url=${encodeURIComponent(mp3.url)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
-        const resp = await fetch(downloadUrl);
-        if (!resp.ok) throw new Error('Download failed');
-        audioBlob = await resp.blob();
-        zip.file(safeMp3Filename(getTrackMeta(trackInfo, i)), audioBlob, { binary: true });
+
         setProgress(((i + 1) / total) * 90);
+      }
+
+      if (addedTracks === 0) {
+        throw new Error('No downloadable MP3 streams found in this playlist.');
       }
 
       setStatus('CREATING ZIP...');
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       setProgress(100);
       saveAs(zipBlob, 'playlist.zip');
-      setStatus('DOWNLOAD COMPLETE');
+      setStatus(skippedTracks.length
+        ? `DOWNLOAD COMPLETE - SKIPPED ${skippedTracks.length} UNAVAILABLE TRACK(S)`
+        : 'DOWNLOAD COMPLETE');
     } catch (err) {
       setError(err.message);
     } finally {
