@@ -80,10 +80,47 @@ async function getTrackInfo(track, forceRefresh = false) {
 }
 
 async function downloadTrack(track, index = 0, forceRefresh = false) {
+  return downloadTrackWithProgress(track, index, forceRefresh);
+}
+
+async function readResponseBlob(response, onProgress) {
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    onProgress(1);
+    return response.blob();
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  const total = Number(response.headers.get('content-length')) || 0;
+  let loaded = 0;
+
+  if (!total) onProgress(null);
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    if (total) onProgress(Math.min(loaded / total, 1));
+  }
+
+  onProgress(1);
+  return new Blob(chunks, {
+    type: response.headers.get('content-type') || 'audio/mpeg',
+  });
+}
+
+function progressLabel(fraction) {
+  return fraction === null ? 'LIVE' : `${Math.round(fraction * 100)}%`;
+}
+
+async function downloadTrackWithProgress(track, index = 0, forceRefresh = false, onProgress = () => {}) {
   const trackInfo = await getTrackInfo(track, forceRefresh);
   const { artist, title } = getTrackMeta(trackInfo, index);
   const mp3 = getMp3Transcoding(trackInfo);
   if (!mp3) throw new Error('No MP3 stream available');
+
+  onProgress(0, { artist, title });
 
   const downloadParams = new URLSearchParams({
     url: mp3.url,
@@ -103,7 +140,7 @@ async function downloadTrack(track, index = 0, forceRefresh = false) {
   }
 
   return {
-    blob: await response.blob(),
+    blob: await readResponseBlob(response, fraction => onProgress(fraction, { artist, title })),
     filename: safeMp3Filename({ artist, title }),
     artist,
     title,
@@ -117,6 +154,7 @@ function App() {
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [fallbackReady, setFallbackReady] = useState(false);
+  const [progressIndeterminate, setProgressIndeterminate] = useState(false);
 
   const handleDownload = async ({ forceRefresh = false } = {}) => {
     if (!url.trim()) return;
@@ -131,6 +169,7 @@ function App() {
     setLoading(true);
     setError('');
     setFallbackReady(false);
+    setProgressIndeterminate(false);
     setProgress(0);
     setStatus(forceRefresh ? 'TRYING BACKUP RESOLUTION...' : 'FETCHING...');
 
@@ -166,9 +205,17 @@ function App() {
         const track = tracks[0];
         let result;
         try {
-          result = await downloadTrack(track, 0, forceRefresh);
+          result = await downloadTrackWithProgress(track, 0, forceRefresh, (fraction, meta) => {
+            setProgressIndeterminate(fraction === null);
+            setProgress(fraction * 100);
+            if (meta) setStatus(`DOWNLOADING: ${meta.artist} - ${meta.title} ${progressLabel(fraction)}`);
+          });
         } catch (firstError) {
-          result = await downloadTrack(track, 0, true).catch(() => { throw firstError; });
+          result = await downloadTrackWithProgress(track, 0, true, (fraction, meta) => {
+            setProgressIndeterminate(fraction === null);
+            setProgress(fraction * 100);
+            if (meta) setStatus(`RETRYING: ${meta.artist} - ${meta.title} ${progressLabel(fraction)}`);
+          }).catch(() => { throw firstError; });
         }
         setStatus(`DOWNLOADING: ${result.artist} - ${result.title}`);
         saveAs(result.blob, result.filename);
@@ -190,9 +237,17 @@ function App() {
         try {
           let result;
           try {
-            result = await downloadTrack(track, i, forceRefresh);
+            result = await downloadTrackWithProgress(track, i, forceRefresh, (fraction, meta) => {
+              setProgressIndeterminate(fraction === null);
+              setProgress(((i + fraction) / total) * 90);
+              if (meta) setStatus(`TRACK ${i + 1}/${total}: ${meta.artist} - ${meta.title} ${progressLabel(fraction)}`);
+            });
           } catch (firstError) {
-            result = await downloadTrack(track, i, true).catch(() => { throw firstError; });
+            result = await downloadTrackWithProgress(track, i, true, (fraction, meta) => {
+              setProgressIndeterminate(fraction === null);
+              setProgress(((i + fraction) / total) * 90);
+              if (meta) setStatus(`RETRY ${i + 1}/${total}: ${meta.artist} - ${meta.title} ${progressLabel(fraction)}`);
+            }).catch(() => { throw firstError; });
           }
 
           setStatus(`TRACK ${i + 1}/${total}: ${result.artist} - ${result.title}`);
@@ -212,6 +267,7 @@ function App() {
       }
 
       setStatus('CREATING ZIP...');
+      setProgressIndeterminate(false);
       const zipBlob = await zip.generateAsync({ type: 'blob' });
       setProgress(100);
       saveAs(zipBlob, 'playlist.zip');
@@ -221,6 +277,7 @@ function App() {
     } catch (err) {
       setError(err.message);
       setFallbackReady(true);
+      setProgressIndeterminate(false);
     } finally {
       setLoading(false);
     }
@@ -229,8 +286,9 @@ function App() {
   return (
     <div className="app-container">
       <div className="card">
-        <h1 className="title">🎵 PLAYLIST DL 🎵</h1>
-        <p className="subtitle">SOUNDCLOUD ONLY</p>
+        <p className="eyebrow">SKATZ / AUDIO UTILITY</p>
+        <h1 className="title">DOWNLOADER<br />FOR SKATZ</h1>
+        <p className="subtitle">SOUNDCLOUD / MP3</p>
 
         <input
           type="text"
@@ -246,20 +304,20 @@ function App() {
           disabled={loading || !url.trim()}
           className="download-btn"
         >
-          {loading ? 'DOWNLOADING...' : 'DOWNLOAD AS ZIP'}
+          {loading ? 'PROCESSING...' : 'DOWNLOAD'}
         </button>
 
         {status && <p className="status-text">{status}</p>}
         {error && (
-          <div className="error-panel">
-            <p className="error-text">❌ {error}</p>
+        <div className="error-panel">
+            <p className="error-text">{error}</p>
             {fallbackReady && (
               <button
                 onClick={() => handleDownload({ forceRefresh: true })}
                 disabled={loading}
                 className="fallback-btn"
               >
-                TRY BACKUP METHOD
+                TRY BACKUP
               </button>
             )}
           </div>
@@ -267,7 +325,7 @@ function App() {
 
         {loading && (
           <div className="progress-bg">
-            <div className="progress-fill" style={{ width: `${progress}%` }} />
+            <div className={`progress-fill${progressIndeterminate ? ' progress-indeterminate' : ''}`} style={{ width: `${progress}%` }} />
           </div>
         )}
       </div>
