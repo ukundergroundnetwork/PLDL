@@ -118,10 +118,38 @@ h1, h2, p {
 }
 
 .error-text {
-  margin-top: 10px;
+  margin-top: 0;
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   color: #fff;                  /* white error, still visible */
+}
+
+.error-panel {
+  margin-top: 14px;
+}
+
+.fallback-btn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 11px 10px;
+  background: transparent;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.16em;
+  cursor: pointer;
+}
+
+.fallback-btn:hover:not(:disabled) {
+  background: #fff;
+  color: #000;
+}
+
+.fallback-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ---------- PROGRESS BAR ---------- */

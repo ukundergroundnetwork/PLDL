@@ -56,31 +56,88 @@ function safeMp3Filename({ artist, title }) {
   return `${artist} - ${title}`.replace(/[\\/:*?"<>|]/g, '_') + '.mp3';
 }
 
+function getMp3Transcoding(track) {
+  return track.media?.transcodings?.find(
+    transcoding => transcoding.format?.protocol === 'progressive' &&
+      transcoding.format?.mime_type === 'audio/mpeg'
+  );
+}
+
+async function getTrackInfo(track, forceRefresh = false) {
+  if (track.media?.transcodings && !forceRefresh) return track;
+
+  const suffix = forceRefresh ? '?refresh=1' : '';
+  const response = await fetch(`${WORKER_BASE}/tracks/${track.id}${suffix}`);
+  if (!response.ok) {
+    let message = `Track lookup failed (${response.status})`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+async function downloadTrack(track, index = 0, forceRefresh = false) {
+  const trackInfo = await getTrackInfo(track, forceRefresh);
+  const { artist, title } = getTrackMeta(trackInfo, index);
+  const mp3 = getMp3Transcoding(trackInfo);
+  if (!mp3) throw new Error('No MP3 stream available');
+
+  const downloadParams = new URLSearchParams({
+    url: mp3.url,
+    artist,
+    title,
+  });
+  if (forceRefresh) downloadParams.set('refresh', '1');
+
+  const response = await fetch(`${WORKER_BASE}/download?${downloadParams}`);
+  if (!response.ok) {
+    let message = `Download failed (${response.status})`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch (_) {}
+    throw new Error(message);
+  }
+
+  return {
+    blob: await response.blob(),
+    filename: safeMp3Filename({ artist, title }),
+    artist,
+    title,
+  };
+}
+
 function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [fallbackReady, setFallbackReady] = useState(false);
 
-  const handleDownload = async () => {
+  const handleDownload = async ({ forceRefresh = false } = {}) => {
     if (!url.trim()) return;
     const parsed = parseURL(url);
     if (!parsed) {
       setError('Unsupported link. Use a SoundCloud track or playlist.');
+      setFallbackReady(false);
       return;
     }
     const { isPlaylist } = parsed;
 
     setLoading(true);
     setError('');
+    setFallbackReady(false);
     setProgress(0);
-    setStatus('FETCHING...');
+    setStatus(forceRefresh ? 'TRYING BACKUP RESOLUTION...' : 'FETCHING...');
 
     try {
-      const resolveRes = await fetch(
-        `${WORKER_BASE}/resolve?url=${encodeURIComponent(url.trim())}`
-      );
+      const resolveParams = new URLSearchParams({ url: url.trim() });
+      if (forceRefresh) resolveParams.set('refresh', '1');
+      const resolveRes = await fetch(`${WORKER_BASE}/resolve?${resolveParams}`);
       if (!resolveRes.ok) {
         // Try to get error message from body
         let errMsg = `Resolve failed (${resolveRes.status})`;
@@ -107,25 +164,14 @@ function App() {
       // --- SINGLE TRACK (no ZIP) ---
       if (total === 1 && !isPlaylist) {
         const track = tracks[0];
-
-        let downloadUrl;
-        let trackInfo = track;
-        if (!track.media?.transcodings) {
-          const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
-          trackInfo = await trackRes.json();
+        let result;
+        try {
+          result = await downloadTrack(track, 0, forceRefresh);
+        } catch (firstError) {
+          result = await downloadTrack(track, 0, true).catch(() => { throw firstError; });
         }
-        const { artist, title } = getTrackMeta(trackInfo);
-        setStatus(`DOWNLOADING: ${artist} - ${title}`);
-        const mp3 = trackInfo.media?.transcodings?.find(
-          t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
-        );
-        if (!mp3) throw new Error('No MP3 stream available');
-        downloadUrl = `${WORKER_BASE}/download?url=${encodeURIComponent(mp3.url)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
-
-        const resp = await fetch(downloadUrl);
-        if (!resp.ok) throw new Error('Download failed');
-        const blob = await resp.blob();
-        saveAs(blob, safeMp3Filename(getTrackMeta(trackInfo)));
+        setStatus(`DOWNLOADING: ${result.artist} - ${result.title}`);
+        saveAs(result.blob, result.filename);
         setProgress(100);
         setStatus('DOWNLOAD COMPLETE');
         setLoading(false);
@@ -142,27 +188,15 @@ function App() {
         setProgress(((i) / total) * 90);
 
         try {
-          let audioBlob;
-          let trackInfo = track;
-          if (!track.media?.transcodings) {
-            const trackRes = await fetch(`${WORKER_BASE}/tracks/${track.id}`);
-            if (!trackRes.ok) throw new Error('Track details unavailable');
-            trackInfo = await trackRes.json();
+          let result;
+          try {
+            result = await downloadTrack(track, i, forceRefresh);
+          } catch (firstError) {
+            result = await downloadTrack(track, i, true).catch(() => { throw firstError; });
           }
 
-          const { artist, title } = getTrackMeta(trackInfo, i);
-          setStatus(`TRACK ${i + 1}/${total}: ${artist} - ${title}`);
-          const mp3 = trackInfo.media?.transcodings?.find(
-            t => t.format?.protocol === 'progressive' && t.format?.mime_type === 'audio/mpeg'
-          );
-          if (!mp3) throw new Error('No MP3 stream available');
-
-          const downloadUrl = `${WORKER_BASE}/download?url=${encodeURIComponent(mp3.url)}&artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`;
-          const resp = await fetch(downloadUrl);
-          if (!resp.ok) throw new Error('Download failed');
-
-          audioBlob = await resp.blob();
-          zip.file(safeMp3Filename({ artist, title }), audioBlob, { binary: true });
+          setStatus(`TRACK ${i + 1}/${total}: ${result.artist} - ${result.title}`);
+          zip.file(result.filename, result.blob, { binary: true });
           addedTracks += 1;
         } catch {
           const { artist, title } = getTrackMeta(track, i);
@@ -186,6 +220,7 @@ function App() {
         : 'DOWNLOAD COMPLETE');
     } catch (err) {
       setError(err.message);
+      setFallbackReady(true);
     } finally {
       setLoading(false);
     }
@@ -215,7 +250,20 @@ function App() {
         </button>
 
         {status && <p className="status-text">{status}</p>}
-        {error && <p className="error-text">❌ {error}</p>}
+        {error && (
+          <div className="error-panel">
+            <p className="error-text">❌ {error}</p>
+            {fallbackReady && (
+              <button
+                onClick={() => handleDownload({ forceRefresh: true })}
+                disabled={loading}
+                className="fallback-btn"
+              >
+                TRY BACKUP METHOD
+              </button>
+            )}
+          </div>
+        )}
 
         {loading && (
           <div className="progress-bg">
