@@ -6,6 +6,7 @@ import { saveAs } from 'file-saver';
 import './styles.css';
 
 const WORKER_BASE = '/api';
+const ZIP_CHUNK_SIZE = 40;
 
 function parseURL(url) {
   const trimmed = url.trim();
@@ -226,13 +227,23 @@ function App() {
       }
 
       // --- MULTIPLE TRACKS → ZIP ---
-      const zip = new JSZip();
+      let zip = new JSZip();
       let addedTracks = 0;
       const skippedTracks = [];
+      let tracksInArchive = 0;
+      let archiveAddedTracks = 0;
+      let archiveNumber = 1;
+      const archiveCount = Math.ceil(total / ZIP_CHUNK_SIZE);
+      const splitArchives = archiveCount > 1;
+
+      if (splitArchives) {
+        setStatus(`LARGE PLAYLIST — ${archiveCount} ZIP PARTS`);
+      }
 
       for (let i = 0; i < total; i++) {
         const track = tracks[i];
         setProgress(((i) / total) * 90);
+        tracksInArchive += 1;
 
         try {
           let result;
@@ -253,6 +264,7 @@ function App() {
           setStatus(`TRACK ${i + 1}/${total}: ${result.artist} - ${result.title}`);
           zip.file(result.filename, result.blob, { binary: true });
           addedTracks += 1;
+          archiveAddedTracks += 1;
         } catch {
           const { artist, title } = getTrackMeta(track, i);
           skippedTracks.push(`${artist} - ${title}`);
@@ -260,20 +272,59 @@ function App() {
         }
 
         setProgress(((i + 1) / total) * 90);
+
+        const archiveIsReady = tracksInArchive >= ZIP_CHUNK_SIZE || i === total - 1;
+        if (archiveIsReady) {
+          const currentArchive = archiveNumber;
+          if (archiveAddedTracks > 0) {
+            setStatus(splitArchives
+              ? `CREATING ZIP ${currentArchive}/${archiveCount}...`
+              : 'CREATING ZIP...');
+
+            const zipBlob = await zip.generateAsync(
+              {
+                type: 'blob',
+                streamFiles: true,
+                // MP3 files are already compressed; STORE avoids unnecessary
+                // CPU and memory use during browser-side ZIP generation.
+                compression: 'STORE',
+              },
+              metadata => {
+                const zipPercent = Math.min(Number(metadata.percent || 0), 100);
+                const archiveProgress = splitArchives ? 8 / archiveCount : 8;
+                const baseProgress = ((i + 1) / total) * 90;
+                setProgress(Math.min(98, baseProgress + (zipPercent / 100) * archiveProgress));
+                setStatus(splitArchives
+                  ? `CREATING ZIP ${currentArchive}/${archiveCount} — ${Math.round(zipPercent)}%`
+                  : `CREATING ZIP — ${Math.round(zipPercent)}%`);
+              }
+            );
+
+            const filename = splitArchives
+              ? `playlist-part-${currentArchive}.zip`
+              : 'playlist.zip';
+            saveAs(zipBlob, filename);
+          }
+
+          // Drop references before starting the next archive. The brief pause
+          // also gives mobile browsers time to register the download.
+          zip = new JSZip();
+          tracksInArchive = 0;
+          archiveAddedTracks = 0;
+          archiveNumber += 1;
+          await new Promise(resolve => setTimeout(resolve, 350));
+        }
       }
 
       if (addedTracks === 0) {
         throw new Error('No downloadable MP3 streams found in this playlist.');
       }
 
-      setStatus('CREATING ZIP...');
-      setProgressIndeterminate(false);
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
       setProgress(100);
-      saveAs(zipBlob, 'playlist.zip');
+      setProgressIndeterminate(false);
       setStatus(skippedTracks.length
-        ? `DOWNLOAD COMPLETE - SKIPPED ${skippedTracks.length} UNAVAILABLE TRACK(S)`
-        : 'DOWNLOAD COMPLETE');
+        ? `${splitArchives ? 'DOWNLOADS' : 'DOWNLOAD'} COMPLETE — SKIPPED ${skippedTracks.length} UNAVAILABLE TRACK(S)`
+        : `${splitArchives ? 'DOWNLOADS' : 'DOWNLOAD'} COMPLETE`);
     } catch (err) {
       setError(err.message);
       setFallbackReady(true);
